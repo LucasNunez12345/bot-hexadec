@@ -1,13 +1,31 @@
 import re
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from config import TOKEN, ADMIN_CHAT_ID, PRECIOS, HORARIO
-from utils.alerts import send_alert_to_admin
+
+# --- Configuración Persistente ---
+try:
+    from sys import path
+    path.append("/data/data/com.termux/files/home")  # Ruta de Termux
+    from bot_config_secret import TOKEN, ADMIN_CHAT_ID, PRECIOS, HORARIO
+except ImportError:
+    print("❌ Error: Archivo de configuración no encontrado.")
+    exit(1)
 
 # --- Validación de Teléfono ---
 def is_valid_phone(phone: str) -> bool:
     return re.match(r'^(\+?56|0)[9]\d{8}$', phone.strip()) is not None
+
+# --- Notificación de Inicio ---
+async def send_start_notification():
+    bot = Bot(token=TOKEN)
+    last_update = os.popen('git log -1 --pretty="%cr"').read().strip()
+    await bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=f"⚡ *Bot Hexadec iniciado*\n\n🔄 Última actualización: {last_update}",
+        parse_mode="Markdown"
+    )
 
 # --- Menú Principal ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,7 +86,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ Usa /start para comenzar.")
         return
     
-    # Paso 1: Validar datos de contacto
+    # Validar datos de contacto
     if user_data["step"] == "ask_contact":
         if "contact_info" not in user_data:
             user_data["contact_info"] = text
@@ -94,7 +112,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("❌ Teléfono inválido. Ingresa uno válido (Ej: +56912345678).")
     
-    # Paso 2: Validar cantidad de equipos (programación)
+    # Validar cantidad de equipos (programación)
     elif user_data["step"] == "ask_quantity":
         try:
             cantidad = int(text)
@@ -114,8 +132,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data["step"] = "confirm_presupuesto"
         except:
             await update.message.reply_text("❌ Por favor, ingresa un *número válido* (Ej: 5).", parse_mode="Markdown")
+    
+    # Motivo de rechazo de presupuesto
+    elif user_data["step"] == "ask_rechazo":
+        await send_alert_to_admin(
+            "Presupuesto RECHAZADO",
+            f"💸 Monto rechazado: ${user_data['presupuesto']} CLP\n"
+            f"📝 Motivo: {text}"
+        )
+        await update.message.reply_text(
+            "⚠️ Hemos registrado tu feedback. ¿Podemos ofrecerte una alternativa? (Usa /start)",
+            parse_mode="Markdown"
+        )
+        user_data.clear()
 
-# --- Handler de Botones (Desbloqueo / Presupuesto) ---
+# --- Handler de Botones ---
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -156,6 +187,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["step"] = "ask_rechazo"
         context.user_data.clear()
 
+# --- Alerta al Administrador ---
+async def send_alert_to_admin(service: str, details: str):
+    bot = Bot(token=TOKEN)
+    await bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=f"🚨 *Nueva solicitud - {service}*\n\n{details}",
+        parse_mode="Markdown"
+    )
+
 # --- Iniciar Bot ---
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -167,4 +207,6 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+    import asyncio
+    asyncio.run(send_start_notification())
     main()
