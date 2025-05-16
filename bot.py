@@ -1,8 +1,17 @@
 import re
 import logging
 import os
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler
+)
 
 # --- Configuración Persistente ---
 try:
@@ -13,211 +22,28 @@ except ImportError:
     logging.error("❌ Error: Archivo de configuración no encontrado.")
     exit(1)
 
+# --- Estados para Conversación de Admin ---
+EDIT_PRICE, SET_DISCOUNT = range(2)
+
 # --- Validación de Datos ---
 def is_valid_phone(phone: str) -> bool:
-    """Valida formato de teléfono chileno: +56912345678 o 56912345678"""
+    """Valida formato de teléfono chileno"""
     return re.match(r'^(\+?56|0)[9]\d{8}$', phone.strip()) is not None
 
-# --- Notificaciones ---
-async def notify_admin(message: str):
-    """Envía notificaciones estructuradas al administrador"""
+# --- Notificaciones Mejoradas ---
+async def notify_admin(message: str, urgent=False):
+    """Envía notificaciones con formato profesional"""
     bot = Bot(token=TOKEN)
+    prefix = "🚨 *URGENTE* " if urgent else "🔔 "
     await bot.send_message(
         chat_id=ADMIN_CHAT_ID,
-        text=f"🔔 *Hexadec - Notificación*\n\n{message}",
+        text=f"{prefix}Hexadec Alertas\n\n{message}",
         parse_mode="Markdown"
     )
 
-# --- Flujo Conversacional Mejorado ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mensaje de inicio con botones grandes y descriptivos"""
-    user = update.effective_user
-    keyboard = [
-        [InlineKeyboardButton("📱 Programar Equipos", callback_data="serv_programacion")],
-        [InlineKeyboardButton("🔓 Desbloquear Equipos", callback_data="serv_desbloqueo")],
-        [InlineKeyboardButton("💬 Asesoría Personalizada", callback_data="serv_asesoria")]
-    ]
-    
-    await update.message.reply_text(
-        f"👋 ¡Hola *{user.first_name}*! Soy tu asistente de *Hexadec Radiocomunicaciones*.\n\n"
-        "Selecciona el servicio que necesitas:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
-
-async def handle_service_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Procesa la selección de servicio con confirmación visual"""
-    query = update.callback_query
-    await query.answer()  # Importante para evitar timeouts
-    
-    service = query.data.split("_")[1]
-    context.user_data.clear()
-    context.user_data["service"] = service
-    
-    if service == "programacion":
-        await query.edit_message_text(
-            "✍️ *Programación de Equipos*\n\n"
-            "Por favor, ingresa la *cantidad de equipos* a programar:\n"
-            "(Ejemplo: 5)",
-            parse_mode="Markdown"
-        )
-        context.user_data["step"] = "cantidad_equipos"
-    
-    elif service == "desbloqueo":
-        # Menú de marcas con botones
-        keyboard = [
-            [InlineKeyboardButton("Motorola", callback_data="marca_motorola")],
-            [InlineKeyboardButton("Otra Marca", callback_data="marca_otra")]
-        ]
-        await query.edit_message_text(
-            "📻 *Desbloqueo de Equipos*\n\n"
-            "Selecciona la marca de tus equipos:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-    
-    else:  # Asesoría
-        await query.edit_message_text(
-            "💼 *Asesoría Personalizada*\n\n"
-            "Por favor, compártenos:\n\n"
-            "1. Tu *nombre completo*\n"
-            "2. *Teléfono* de contacto (Ej: +56912345678)\n"
-            "3. *Detalles* de lo que necesitas\n\n"
-            "⚠️ Envíalo todo en *un solo mensaje* así:\n"
-            "• Nombre: Juan Pérez\n"
-            "• Teléfono: +56987654321\n"
-            "• Detalles: Necesito asesoría para compra de 10 radios",
-            parse_mode="Markdown"
-        )
-        context.user_data["step"] = "datos_contacto"
-
-async def handle_marca_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Procesa selección de marca para desbloqueo"""
-    query = update.callback_query
-    await query.answer()
-    
-    marca = query.data.split("_")[1]
-    
-    if marca == "motorola":
-        await query.edit_message_text(
-            "📟 *Desbloqueo Motorola*\n\n"
-            "Ingresa la *cantidad de equipos* a desbloquear:\n"
-            "(Ejemplo: 3)",
-            parse_mode="Markdown"
-        )
-        context.user_data["step"] = "cantidad_equipos"
-        context.user_data["marca"] = "motorola"
-    else:
-        await query.edit_message_text(
-            "🛠️ *Desbloqueo Otras Marcas*\n\n"
-            "Un especialista se contactará contigo. Por favor envíanos:\n\n"
-            "1. Tu *nombre completo*\n"
-            "2. *Teléfono* de contacto\n"
-            "3. *Marca/Modelo* de los equipos",
-            parse_mode="Markdown"
-        )
-        context.user_data["step"] = "datos_contacto"
-
-async def handle_user_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Procesa todas las respuestas de texto del usuario"""
-    user_data = context.user_data
-    text = update.message.text
-    
-    # Flujo para programación/desbloqueo Motorola
-    if user_data.get("step") == "cantidad_equipos":
-        try:
-            cantidad = int(text)
-            if user_data["service"] == "programacion":
-                precio = PRECIOS["programacion"]["bulk"] if cantidad >= 10 else PRECIOS["programacion"]["unitario"]
-                total = cantidad * precio
-                user_data["presupuesto"] = total
-                
-                keyboard = [
-                    [InlineKeyboardButton("✅ Aceptar Presupuesto", callback_data="accion_aceptar")],
-                    [InlineKeyboardButton("❌ Rechazar Presupuesto", callback_data="accion_rechazar")]
-                ]
-                
-                await update.message.reply_text(
-                    f"💰 *Presupuesto para {cantidad} equipos*\n\n"
-                    f"• Precio unitario: ${precio} CLP\n"
-                    f"• *Total:* ${total} CLP\n\n"
-                    "¿Deseas aceptar este presupuesto?",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="Markdown"
-                )
-                user_data["step"] = "confirmar_presupuesto"
-            
-            elif user_data.get("marca") == "motorola":
-                total = cantidad * PRECIOS["desbloqueo_motorola"]
-                await update.message.reply_text(
-                    f"🔓 *Desbloqueo Motorola*\n\n"
-                    f"• Equipos: {cantidad}\n"
-                    f"• *Total:* ${total} CLP\n\n"
-                    "Un ejecutivo se contactará para coordinar el servicio.",
-                    parse_mode="Markdown"
-                )
-                await notify_admin(
-                    f"Nuevo servicio de desbloqueo Motorola\n\n"
-                    f"• Equipos: {cantidad}\n"
-                    f"• Total: ${total} CLP\n"
-                    f"• Cliente: @{update.effective_user.username}"
-                )
-                user_data.clear()
-        
-        except ValueError:
-            await update.message.reply_text(
-                "❌ Por favor ingresa solo números (Ej: 5)",
-                parse_mode="Markdown"
-            )
-    
-    # Flujo para datos de contacto
-    elif user_data.get("step") == "datos_contacto":
-        if "datos_cliente" not in user_data:
-            user_data["datos_cliente"] = text
-            await update.message.reply_text(
-                "📋 *Verificación de Datos*\n\n"
-                "Por favor confirma que esta información es correcta:\n\n"
-                f"{text}\n\n"
-                "Responde *SI* o *NO*",
-                parse_mode="Markdown"
-            )
-            user_data["step"] = "confirmar_datos"
-        else:
-            await update.message.reply_text(
-                "ℹ️ Ya hemos registrado tu información. "
-                "Un ejecutivo se contactará contigo pronto.",
-                parse_mode="Markdown"
-            )
-    
-    # Confirmación de datos
-    elif user_data.get("step") == "confirmar_datos":
-        if text.lower() in ["si", "sí"]:
-            await update.message.reply_text(
-                "✅ ¡Perfecto! Hemos registrado tu solicitud.\n\n"
-                "Horario de contacto:\n"
-                f"{HORARIO}\n\n"
-                "¿Necesitas ayuda con algo más? (Usa /start)",
-                parse_mode="Markdown"
-            )
-            await notify_admin(
-                f"Nueva solicitud de {user_data['service']}\n\n"
-                f"Datos del cliente:\n{user_data['datos_cliente']}\n\n"
-                f"Usuario: @{update.effective_user.username}"
-            )
-            user_data.clear()
-        else:
-            await update.message.reply_text(
-                "🔄 Por favor, vuelve a enviarnos tus datos:\n\n"
-                "1. Nombre completo\n"
-                "2. Teléfono\n"
-                "3. Detalles de tu solicitud",
-                parse_mode="Markdown"
-            )
-            user_data["step"] = "datos_contacto"
-            del user_data["datos_cliente"]
-
-async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Procesa confirmación/rechazo de presupuestos"""
+# --- Flujo de Presupuestos ---
+async def handle_budget_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Procesa aceptación/rechazo de presupuestos"""
     query = update.callback_query
     await query.answer()
     
@@ -227,28 +53,152 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     if action == "aceptar":
         await query.edit_message_text(
             "🎉 *¡Presupuesto Aceptado!*\n\n"
-            "Un ejecutivo se contactará contigo *dentro de los próximos 15 minutos*.\n\n"
-            "Horario de atención:\n"
-            f"{HORARIO}\n\n"
-            "¿Necesitas algo más? (Usa /start)",
+            "Un ejecutivo se contactará contigo *en menos de 15 minutos*.\n\n"
+            f"Horario: {HORARIO}\n\n"
+            "¿Necesitas algo más? /start",
             parse_mode="Markdown"
         )
         await notify_admin(
-            f"🚨 PRESUPUESTO ACEPTADO\n\n"
+            f"💰 *Presupuesto ACEPTADO*\n\n"
             f"• Servicio: {user_data['service']}\n"
             f"• Monto: ${user_data['presupuesto']} CLP\n"
             f"• Cliente: @{update.effective_user.username}\n\n"
-            f"Contactar urgentemente!"
+            f"CONTACTAR INMEDIATO",
+            urgent=True
         )
     else:
         await query.edit_message_text(
             "📝 Por favor, indícanos el motivo del rechazo:\n"
-            "(Ej: Precio elevado, encontré otra opción, etc.)",
+            "(Ej: 'Es muy caro', 'Encontré otro proveedor', etc.)",
             parse_mode="Markdown"
         )
         user_data["step"] = "motivo_rechazo"
     
+    return ConversationHandler.END
+
+async def log_rejection_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Registra el motivo de rechazo y notifica al admin"""
+    reason = update.message.text
+    user_data = context.user_data
+    
+    await notify_admin(
+        f"🚫 *Presupuesto RECHAZADO*\n\n"
+        f"• Servicio: {user_data['service']}\n"
+        f"• Monto: ${user_data['presupuesto']} CLP\n"
+        f"• Cliente: @{update.effective_user.username}\n"
+        f"• Motivo: _{reason}_\n\n"
+        f"💡 Oportunidad para mejorar!",
+        urgent=True
+    )
+    
+    await update.message.reply_text(
+        "⚠️ Hemos registrado tu feedback. ¿Quieres que te contactemos con una alternativa?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Sí, por favor", callback_data="contactar_alternativa")],
+            [InlineKeyboardButton("❌ No, gracias", callback_data="cerrar_conversacion")]
+        ])
+    )
     user_data.clear()
+    return ConversationHandler.END
+
+# --- Verificación con Botones ---
+async def confirm_user_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reemplaza la confirmación por texto con botones interactivos"""
+    user_data = context.user_data
+    await update.message.reply_text(
+        "🔍 *Verifica tus datos*:\n\n"
+        f"{user_data['datos_cliente']}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Todo Correcto", callback_data="datos_confirmados")],
+            [InlineKeyboardButton("✏️ Corregir Información", callback_data="datos_incorrectos")]
+        ]),
+        parse_mode="Markdown"
+    )
+
+# --- Panel de Administración Completo ---
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menú de administración con todas las funciones"""
+    if str(update.effective_user.id) != ADMIN_CHAT_ID:
+        return
+    
+    await update.message.reply_text(
+        "🛠️ *PANEL DE ADMINISTRACIÓN* 🛠️\n\n"
+        "Selecciona una opción:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Precios Actuales", callback_data="admin_precios")],
+            [InlineKeyboardButton("✏️ Modificar Precios", callback_data="admin_edit_precios")],
+            [InlineKeyboardButton("🎟️ Ofertas Temporales", callback_data="admin_ofertas")],
+            [InlineKeyboardButton("📈 Estadísticas", callback_data="admin_stats")]
+        ]),
+        parse_mode="Markdown"
+    )
+
+async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gestiona todas las acciones del panel admin"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split("_")[1]
+    
+    if data == "precios":
+        precios_text = "💰 *PRECIOS ACTUALES*\n\n"
+        for servicio, valores in PRECIOS.items():
+            precios_text += f"• {servicio.capitalize()}: ${valores['precio']} CLP"
+            if valores.get("oferta"):
+                precios_text += f" (🎟️ Oferta: ${valores['oferta']['precio_oferta']} hasta {valores['oferta']['valido_hasta']})"
+            precios_text += "\n"
+        
+        await query.edit_message_text(
+            precios_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Volver", callback_data="admin_back")]
+            ])
+        )
+    
+    elif data == "edit_precios":
+        await query.edit_message_text(
+            "✏️ *MODIFICAR PRECIOS*\n\n"
+            "Selecciona el servicio a actualizar:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Programación", callback_data="edit_programacion")],
+                [InlineKeyboardButton("Desbloqueo Motorola", callback_data="edit_motorola")],
+                [InlineKeyboardButton("🔙 Volver", callback_data="admin_back")]
+            ]),
+            parse_mode="Markdown"
+        )
+        return EDIT_PRICE
+
+# --- Handlers de Conversación para Admin ---
+async def edit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    service = query.data.split("_")[1]
+    context.user_data["edit_service"] = service
+    
+    await query.edit_message_text(
+        f"✏️ Ingresa el nuevo precio para *{service}* (solo números):",
+        parse_mode="Markdown"
+    )
+    return SET_DISCOUNT
+
+async def set_new_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        new_price = int(update.message.text)
+        service = context.user_data["edit_service"]
+        PRECIOS[service]["precio"] = new_price
+        
+        # Guardar cambios persistentes
+        with open("/data/data/com.termux/files/home/bot_config_secret.py", "w") as f:
+            f.write(f"TOKEN = '{TOKEN}'\nADMIN_CHAT_ID = '{ADMIN_CHAT_ID}'\n\nPRECIOS = {PRECIOS}\nHORARIO = '{HORARIO}'")
+        
+        await update.message.reply_text(
+            f"✅ Precio de *{service}* actualizado a *${new_price} CLP*",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("❌ Ingresa solo números (Ej: 15000)")
+        return SET_DISCOUNT
 
 # --- Inicialización del Bot ---
 def main():
@@ -256,21 +206,38 @@ def main():
     
     # Handlers principales
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^serv_"))
-    app.add_handler(CallbackQueryHandler(handle_marca_selection, pattern="^marca_"))
-    app.add_handler(CallbackQueryHandler(handle_confirmation, pattern="^accion_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_response))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    
+    # Conversación para presupuestos
+    budget_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_budget_response, pattern="^presupuesto_")],
+        states={
+            "motivo_rechazo": [MessageHandler(filters.TEXT & ~filters.COMMAND, log_rejection_reason)]
+        },
+        fallbacks=[]
+    )
+    app.add_handler(budget_handler)
+    
+    # Conversación para administración
+    admin_conversation = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_admin_actions, pattern="^admin_")],
+        states={
+            EDIT_PRICE: [CallbackQueryHandler(edit_price, pattern="^edit_")],
+            SET_DISCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_price)]
+        },
+        fallbacks=[CallbackQueryHandler(admin_panel, pattern="^admin_back")]
+    )
+    app.add_handler(admin_conversation)
     
     # Notificación de inicio
     async def post_init(application: Application):
         await notify_admin(
-            f"⚡ Bot iniciado correctamente\n\n"
-            f"🔄 Última actualización: {os.popen('git log -1 --pretty="%cr"').read().strip()}"
+            f"⚡ *Bot iniciado correctamente*\n\n"
+            f"🔄 Última actualización: {os.popen('git log -1 --pretty="%cr"').read().strip()}\n"
+            f"📅 Hora del servidor: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
         )
     
-    app.add_handler(CommandHandler("status", lambda u,c: notify_admin("El bot está activo ✅")))
     app.post_init = post_init
-    
     logging.info("Bot Hexadec iniciado 🚀")
     app.run_polling()
 
