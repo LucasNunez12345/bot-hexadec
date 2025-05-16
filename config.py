@@ -1,8 +1,8 @@
 # Token de tu bot (obtén uno con @BotFather en Telegram)
-TOKEN = "7900959791:AAFchPNT8oeq-old9WkqSFVyx8TK9LxfV2k"
+TOKEN = ""
 
 # Tu chat ID personal (para recibir alertas)
-ADMIN_CHAT_ID = "5934935328"
+ADMIN_CHAT_ID = ""
 
 # Precios en CLP
 PRECIOS = {
